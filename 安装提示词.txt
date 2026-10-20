@@ -1,0 +1,68 @@
+===============================================================
+附：DSH 安装提示词（傻瓜式）—— 1.1.2 版
+===============================================================
+
+把下面整段**原样复制**，作为你在一个新的 DSH 会话里的第一条消息发出去。
+（只需把第一行里的用户名改成你本机的。）
+
+---- 复制开始 ----
+
+请帮我把「android-screen-automation」手机自动化能力装到这台机器上。
+安装包在：C:\Users\你的用户名\Desktop\android-screen-automation
+
+它由三部分组成：
+  SKILL.md + scripts/ + references/    技能本体（adb 屏幕自动化的脚本与方法）
+  key.txt                              学习通军事理论作业答案键（196 题）
+  plugin/                              两个 DSH 插件包
+
+请按顺序做完，每步都要**实测验证**，不要只说"应该可以"。
+
+1) 装技能
+   把 SKILL.md、scripts/、references/ 放到：
+       <用户目录>\.dsh\skills\android-screen-automation\
+   （SKILL.md 在根部，scripts 和 references 是它的子目录）
+   若已存在同名目录，先备份再覆盖。
+
+2) 装插件 —— 这里最容易错，务必守住分工
+   - dsh-phone-tools  是**普通依赖**：没有 dsh.bundle、没有 cordis.patch.yml
+   - dsh-phone-preset 是**唯一的 bundle**：patch 只 insert 一个 agent 预设
+
+   a. 把 plugin/dsh-phone-tools 和 plugin/dsh-phone-preset 整个拷到
+      <profile>\node_modules\ 下（**真目录，不要 link/junction**）
+      <profile> 一般是 C:\Users\<你>\.dsh\profiles\desktop
+   b. 改 <profile>\package.json：
+        dependencies 里两个都写版本号（与各自 package.json 一致）
+        dsh.profile.bundles 里**只加** dsh-phone-preset
+   c. 重启 DSH（插件只在启动时加载）
+
+3) 验证 —— 每条都要贴实际输出，不许省略
+       grep -c 'dsh-phone-tools'  <profile>\cordis.yml      # 必须是 1
+       grep    'id: dsh-phone-tools' <profile>\cordis.yml   # 必须无输出
+   然后分别汇报：
+   ・新建**标准模式**会话，问有没有 phone_probe → 应该报 unknown tool
+   ・切到「手机自动化模式」，应有 6 个：phone_probe / phone_gate / phone_read /
+     phone_tap / phone_collect / phone_answer
+   ・跑 phone_probe，回执第一行应是 `phone_probe v1.1.2: <skillDir>`
+
+4) 通读 references/pitfalls.md，在回答里用三句话复述你认为最可能踩的坑。
+
+禁忌（全部是真踩过的）：
+ - 别给 dsh-phone-tools 写 cordis.patch.yml，也别把它写进 bundles。
+   它会把自己 insert 成 profile 的**全局条目**，结果标准模式也能操作手机，
+   作用域隔离直接失效。
+ - 别手改 <profile>\cordis.yml。它是启动时**重新生成**的，手写会被覆盖。
+ - 新增预设必须写成 `- insert:` 包住的列表项；裸写 `- id: preset-xxx`
+   会被**静默忽略**（不报错，只是不生效）。
+ - bash 必须按**绝对路径**实测能否运行（不能只 existsSync），
+   且内层调用要补 PATH，否则报 `bash: command not found`(exit 127)。
+ - 【翻页点击必点】跳过任何一次翻页，后续每一页都会错位一格，整卷报废。
+ - 【先清后设】单选是 radio 语义，点新项会自动清旧项；
+   若之后按旧快照再点旧项，会把正确答案顶掉。
+
+---- 复制结束 ----
+
+关于答案键 key.txt：
+按**题号**索引，只在该卷题目与顺序完全一致时可用。
+哪些题已与官方批阅页逐题核对过、哪些还没核对，见 key_status.md。
+作答遍的自校正只能保证"手机状态 == 你的键"，**不能**保证"键 == 正确答案"——
+第二遍报"修正 0"只证明流程稳定，不证明答案对。

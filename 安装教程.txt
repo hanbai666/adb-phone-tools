@@ -1,0 +1,604 @@
+===============================================================
+ android-screen-automation  安装与使用教程
+ （在另一台电脑上从零装起来）
+===============================================================
+
+【这是什么】
+把一台 Android 手机变成"可被脚本自动作答"的终端。
+全程不使用 OCR：读题、判断选项是否已选中、找翻页按钮，
+都靠 adb 截图 + 纯像素分析完成；"这道题该选什么"由人（或模型）看图决定。
+
+本教程假设你没装过任何东西。按顺序做即可。
+
+
+---------------------------------------------------------------
+一、准备三样东西
+---------------------------------------------------------------
+
+1) adb（Android Platform Tools）
+   下载地址：
+       https://developer.android.com/tools/releases/platform-tools
+   解压后把 platform-tools 目录放在任意位置，例如：
+       C:\adb\platform-tools\adb.exe
+
+2) Python 3（3.8 以上都行）
+   下载地址：
+       https://www.python.org/downloads/
+   安装时务必勾选 "Add python.exe to PATH"。
+
+3) Pillow（Python 图像库，pix.py 的依赖）
+   装完 Python 后，打开命令行执行：
+       pip install Pillow
+
+4) 一部打开了「USB 调试」的 Android 手机
+   - 设置 -> 关于手机 -> 连点"版本号"7 次，进入开发者模式
+   - 设置 -> 开发者选项 -> 打开"USB 调试"
+   - 用数据线连电脑，手机弹出"允许 USB 调试吗" -> 点允许
+   - 注意：USB 用途要选"传输文件"，只充电模式下 adb 经常看不到设备
+
+
+---------------------------------------------------------------
+二、把这个文件夹放哪
+---------------------------------------------------------------
+
+方式 A（当 DSH 技能用，推荐）
+   把整个 android-screen-automation 文件夹复制到：
+       C:\Users\<你的用户名>\.dsh\skills\
+   最终路径形如：
+       C:\Users\<你的用户名>\.dsh\skills\android-screen-automation\SKILL.md
+   SKILL.md 顶部已带 frontmatter，DSH 会自动识别为技能。
+
+方式 B（当普通脚本用，不装 DSH 也行）
+   放桌面或任意目录，直接用 bash 跑 scripts 里的脚本即可。
+   本教程后面所有命令对两种方式都适用（只需把路径换成你自己的）。
+
+
+---------------------------------------------------------------
+三、让脚本找到 adb 和 python
+---------------------------------------------------------------
+
+脚本的查找顺序（不用背，知道有这三种办法就行）：
+
+  adb：  环境变量 ADB   ->   PATH 里的 adb   ->   C:\adb\platform-tools\adb.exe
+  python：环境变量 PY（必须真能 import PIL，只存在不算）
+         -> python3 -> python -> 内置回退路径
+  两者都可以用命令行参数覆盖：--adb <路径>   --py <路径>
+
+办法 1：加进 PATH（一劳永逸）
+   Windows：设置 -> 系统 -> 系统信息 -> 高级系统设置 -> 环境变量
+            在 Path 里加入 C:\adb\platform-tools  和  Python 安装目录
+   验证：新开一个命令行窗口，分别运行
+            adb version
+            python -c "import PIL; print(PIL.__version__)"
+        两条都能输出版本号就算成功。
+
+办法 2：每次运行时传参
+   在命令后面加 --adb <路径> --py <路径>
+
+办法 3：临时设环境变量（只在当前窗口有效）
+   Windows CMD ：   set ADB=C:\adb\platform-tools\adb.exe
+   PowerShell  ：   $env:ADB="C:\adb\platform-tools\adb.exe"
+   Git Bash/WSL：   export ADB=/c/adb/platform-tools/adb.exe
+
+注意：脚本必须在 bash 下运行（Git Bash / WSL / MSYS 都行），
+      不要在 CMD 里直接跑 .sh。Windows 路径写成 C:/xxx 或 /c/xxx 都可以。
+
+
+---------------------------------------------------------------
+四、验证安装（务必先做这步）
+---------------------------------------------------------------
+
+1) 确认手机连上了：
+       adb devices
+   期望输出一行：  <一串序列号>    device
+
+   如果显示 unauthorized
+       -> 看手机屏幕，点"允许 USB 调试"
+   如果列表为空
+       -> 换数据线（很多线只能充电）；换 USB 口；
+          下拉手机通知栏，把 USB 用途改成"传输文件"
+
+2) 跑阶段 0（环境监测）：
+       bash scripts/env-probe.sh --serial <上面那串序列号>
+   （只有一台设备时 --serial 可以省略）
+
+   它会打印：屏幕分辨率 / 唤醒状态 / 前台 App / 三项操作耗时 /
+             可访问性节点数与文本数 / 是否有 DevTools socket / 建议走哪条路线
+
+   看到这些内容且没报错，安装就成功了。
+
+
+---------------------------------------------------------------
+五、日常使用：五阶段
+---------------------------------------------------------------
+
+【入口】开跑前先选模式：
+       bash scripts/start.sh
+   它会问：
+       [1] key    复用已有答案键 key.txt（跳过读题，省约 33k token）
+       [2] fresh  从零开始：遍历截图 -> 思考出键 -> 倒序作答
+   选完会打印该模式对应的确切命令序列，直接复制执行即可。
+
+   非交互方式：
+       bash scripts/start.sh --mode key
+       bash scripts/start.sh --mode fresh
+
+【各阶段单独跑】
+
+   # 阶段 0  环境监测 + 路线判定
+   bash scripts/env-probe.sh --serial <SERIAL>
+
+   # 阶段 1  选项点击尝试（找出该点哪一列 x，输出 TAPX=...；会自动复原现场）
+   bash scripts/tap-probe.sh --serial <SERIAL> --marker blue
+
+   # 阶段 2  采集遍（逐页截图 + 自适应裁剪 + 记录坐标 + 翻页）
+   bash scripts/collect-run.sh --serial <SERIAL> --dir work --pages 196 --marker blue
+   #        产物：work/q001.png ... 与 work/index.txt
+
+   # 阶段 3  【由人/模型完成】逐页看 work/q*.png，产出 work/key.txt
+   #        格式：每行 "<题号> <字母>"，多选题写成 "<题号> ACD"
+
+   # 阶段 4  作答遍（幂等，可以反复跑，只点该点的）
+   bash scripts/answer-run.sh --serial <SERIAL> --dir work --key work/key.txt \
+        --from 196 --to 1 --backward --marker blue --tapx <阶段1得到的TAPX>
+
+   # 阶段 5  核验：再跑一遍阶段 4，必须报 "修正 0" —— 那是收敛的证明
+
+关于 --backward（倒序作答）：
+   采集遍结束时手机就停在最后一页，倒着答可以直接开跑，
+   省掉"退回第 1 题"的整卷导航（196 页约 3 分钟）。
+   如果手机此刻不在最后一页，就改成正向：--from 1 --to 196 并去掉 --backward。
+
+工作目录（--dir / WORK）默认是"当前目录下的 .phone"。
+   每次任务建议换一个单独目录，避免旧的 index.txt 混进来。
+
+
+---------------------------------------------------------------
+六、换电脑时，哪些文件能带、哪些不能带
+---------------------------------------------------------------
+
+  能带   key.txt     答案键（题号 -> 答案）。
+                     前提：卷面题目内容与顺序完全一致，否则整卷错位。
+  不能带 index.txt   每页"下一题"按钮的纵坐标 ——
+                     它是"当前设备分辨率下"的页面布局测量值。
+  不能带 TAPX        该点哪一列 x，同理。
+
+所以换电脑/换手机的正确流程是：
+
+   env-probe  ->  tap-probe  ->  collect-run   （重新测量坐标）
+              ->  直接复用 key.txt  ->  answer-run
+
+"读题判断题"这一步可以完全跳过，这是最省时间的地方。
+
+⚠ 两个必须记住的坑：
+  1) key.txt 是按【题号】索引的，不是按题目内容。
+     如果新卷子的题目顺序被打乱，直接套用会整卷错位，
+     而作答遍照样会报"成功" —— 这是最难发现的失败模式。
+     套用前请人工核对：采集下来的第 1 页和最后一页，题面要和键的首尾对得上。
+
+  2) 作答遍只保证"手机状态 == 你的 key"，不保证 key 是对的。
+     它第二遍报"修正 0"只说明流程稳定，不说明答案正确。
+     答案的正确性只能靠人工核对或官方公布的答案。
+
+
+---------------------------------------------------------------
+七、常见故障
+---------------------------------------------------------------
+
+  adb devices 列表为空
+      -> 换数据线（很多线只能充电）；换 USB 口；
+         手机通知栏把 USB 用途改成"传输文件"
+
+  unauthorized
+      -> 手机屏幕上点"允许 USB 调试"；
+         或开发者选项里"撤销 USB 调试授权"后重新插拔
+
+  提示 FATAL: 找不到可用的 python（且需装 Pillow）
+      -> pip install Pillow
+      -> 还不行就用 PY=/path/to/python 明确指定解释器
+
+  提示 FATAL: 没有可用设备
+      -> 用 --serial 明确指定 adb devices 列出的那串序列号
+
+  跑采集遍时选项检测为空（OPTS 后面没东西）
+      -> 手机可能锁屏了，先解锁再跑；用 env-probe 看唤醒状态
+      -> 也可能该页的选项标记不是蓝色，改用 --marker dark 试试
+
+  翻页点不动 / 整卷错位
+      -> 翻页按钮的纵坐标每页都在变（实测跨越 1399~2313），
+         绝不能用固定 y。脚本已按页取 y；若你改过脚本，注意这一点。
+
+  脚本报 Permission denied / 语法怪错
+      -> 用 bash 运行（不是 sh）；Windows 上用 Git Bash 或 WSL
+
+
+---------------------------------------------------------------
+八、文件清单
+---------------------------------------------------------------
+
+  安装教程.txt              本文件
+  README.md                 快速总览
+  SKILL.md                  技能主文档（DSH 用，带 frontmatter）
+  key.txt                   某份卷子的答案键（可直接复用的示例/资产）
+  key_status.md             key.txt 的可信度分层 —— 复用前必读
+  references/two-routes.md  路线判定：截图 / 可访问性树 / DevTools
+  references/pitfalls.md    23+ 条实测坑，全部是"静默失败"型
+  scripts/start.sh          入口 / 模式闸门（先问用不用 key.txt）
+  scripts/env-probe.sh      阶段 0：环境监测 + 路线判定
+  scripts/tap-probe.sh      阶段 1：选项点击尝试 + 标定点击列
+  scripts/collect-run.sh    阶段 2：采集遍
+  scripts/answer-run.sh     阶段 4：自校正作答遍（幂等）
+  scripts/nav-bench.sh      翻页速度基准
+  scripts/lib.sh            公共库（设备解析、截图、点击、字段提取）
+  scripts/pix.py            像素分析核心（裁剪/选项/选中态/指纹/找红点）
+
+  dsh-phone-tools/              可选：DSH 插件（把上面 6 个脚本挂成常驻工具）
+    package.json                name / main / type / dsh.bundle.patch
+    cordis.patch.yml            挂载声明（"我要插进 profile"的那一行）
+    lib/index.js                插件本体：解析路径 → 起 bash → 递回脚本输出
+    README.md                   插件的说明与可配项
+
+---------------------------------------------------------------
+九、可选：装成 DSH 插件（推荐）
+---------------------------------------------------------------
+
+【为什么要装】
+不装也能用：脚本就摆在这，按第五节的五阶段直接 bash 跑，完全够。
+装插件只解决一件事，但那件事很关键：
+
+    skill 靠 description 被"想起"才会用。description 一旦被 YAML 引号
+    截断，skill 会在新会话里**静默消失、而且不报错**（真踩过）。
+    插件把 6 个工具直接放进每一轮的工具表，不需要任何触发。
+
+插件的本体只有 4 个文件，而且**不含第二份实现** —— 几何/点击/答案比对的
+逻辑仍然只在本文件夹的 scripts/ 里那一份。插件只负责三件事：
+解析路径 → 起 bash → 把脚本的 stdout/stderr 原样递回来。
+
+【装】
+  1) 把 dsh-phone-tools\ 放在一个不会被移动的位置。
+     放在本文件夹里就行 —— 插件会**自动认出同级的 scripts/**，
+     所以整个文件夹拷到哪台机器都能用，不用改配置。
+
+  2) 装它（二选一）：
+
+       DSH 会话里直接说：
+         plugin_manager(action="install_bundle", target="link:<dsh-phone-tools 的绝对路径>")
+
+       命令行等价：
+         dsh plugin --profile desktop add link:<同一路径>
+
+  3) **重启 DSH**（原因见下面坑③）。
+
+【装完怎么确认】
+  让它跑一次 phone_probe：设备/屏幕/唤醒状态/前台 App/可访问性树可用性，
+  以及**该走截图路线还是可访问性树路线**，一次性报出来。
+
+  工具表里应该能看到这 6 个：
+    phone_probe    环境监测 + 路线判定
+    phone_gate     动手前的闸门：证明按坐标点击真能生效，并标定点击列
+    phone_read     截屏 → 自适应裁剪到约 512px（约 1 个视觉 tile）→ 给出坐标换算公式
+    phone_tap      唯一执行原语（点选项 / 点翻页）
+    phone_collect  采集遍（只翻页，不点选项）
+    phone_answer   自校正作答遍（只点需要改的）
+
+【三个坑 —— 都是真踩的，现象和真因不在同一层】
+  坑① 在 package.json 里写了 peerDependencies 声明
+       → 安装成功，但激活失败，宿主只回一句 "failed to import"。
+       真因：判定口径是 "Incompatible DSH peer dependencies block
+       installation and activation"。
+       修法：package.json **不要写 peerDependencies**
+       （对照能正常工作的 dsh-whale-widget，它压根没这个字段）。
+
+  坑② 插件里一访问 ctx.tools 就报
+         cannot get property "tools" without inject
+       真因：Cordis 插件必须在 apply 之前**声明依赖哪些服务**。
+       修法：在 lib/index.js 顶部补这两行导出：
+         export const name = 'dsh-phone-tools';
+         export const inject = ['tools'];
+
+  坑③ **改了插件代码不会自动重载**。ESM 模块缓存无法失效，
+       必须重启 DSH —— 否则你会一直看到改动前的报错，
+       连报错行号都是旧文件的（判断依据：报错行号与你当前文件对不上）。
+
+【卸载】
+  plugin_manager(action="set_bundle", target="dsh-phone-tools", enabled=false)
+  或  dsh plugin --profile desktop remove dsh-phone-tools
+
+【可选配置】
+  默认值开箱可用（skillDir 自动认同级 scripts/，adb 找 C:\adb\platform-tools\adb.exe）。
+  换手机 / 换路径时，在 profile 里那一行加 config 覆盖：
+
+    - id: dsh-phone-tools
+      name: 'dsh-phone-tools'
+      config:
+        skillDir: 'C:\...\android-screen-automation'
+        serial:   '你的设备序列号'
+        adb:      'C:\...\adb.exe'
+        workDir:  '工作目录（放截图 / index.txt / 答案键）'
+
+【一句话对照】
+  想换台电脑、换个 Agent 也能用     → 用文件夹里的脚本（skill 形态）
+  想让它在新会话里"一定在工具表里"  → 装这个插件
+  两者不冲突：插件只是发现层，脚本仍是唯一真身。
+
+===============================================================
+
+## 十、预设模式（v1.1 新增）：让插件只在「手机自动化模式」下存在
+
+### 这解决了什么问题
+
+插件装成 **bundle** 时，它对**所有** agent 预设都生效 —— 你写代码、写文档时 `phone_*` 也挂在工具表里。除了白占工具位，还会带来"该不该用"的歧义。
+
+DSH 的 **agent 预设**本身就是一份"这个模式带哪些插件"的清单：
+
+```yaml
+- id: preset-standard
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: standard
+    order: 1
+    plugins:
+      - id: tool-fs
+        name: '@deepseek-ai/dsh-tool-fs'
+      - id: tool-plugin-manager
+        name: '@deepseek-ai/dsh-plugin-manager/tools'
+        disabled: true
+```
+
+所以把插件**写进某个预设的 plugins 列表**，它就只有选那个预设时才加载 —— 这正是"其他预设状态下不调用此插件"。
+
+### 怎么装
+
+```bash
+python scripts/apply-preset.py --dry-run     # 先看会改什么
+python scripts/apply-preset.py               # 真正执行
+```
+
+脚本会：
+
+1. 备份 `cordis.yml`（带时间戳）
+2. 以 `preset-standard` 为模板复制出 `preset-phone`（`id: phone`、`order: 6`、显示名「手机自动化模式」）
+3. 在其 plugins 末尾追加：
+
+   ```yaml
+         - id: tool-phone
+           name: dsh-phone-tools
+   ```
+
+4. 校验：新预设存在、`tool-phone` 在列表里、**原有 5 个预设一个都没被动过**；有 PyYAML 就再做完整解析（`!!js` 标签做容错）
+5. 若 `dsh-phone-tools` 在 `dsh.profile.bundles` 里，**移除它**（否则会全局加载，等于没隔离）
+6. 校验失败自动回滚
+
+然后 **重启 DSH 客户端**，在预设选择器里选「手机自动化模式」。
+
+回滚：
+
+```bash
+python scripts/apply-preset.py --rollback "C:\Users\你\.dsh\profiles\desktop\cordis.yml.bak-YYYYMMDD-HHMMSS"
+```
+
+### 三个必须知道的限制
+
+| 限制 | 说明 |
+| --- | --- |
+| **预设之间没有继承** | 新预设是 `standard` 的一份**拷贝**。DSH 升级后上游预设变了，这份副本不会自动跟随 —— 升级后建议对比一下，或用 `--rollback` 后重跑脚本 |
+| **改 `cordis.yml` 有启动风险** | 脚本已做备份 + 校验 + 自动回滚，但万一客户端起不来，用备份文件覆盖回去即可 |
+| **预设是本机 profile 级的** | 跟桌面包不同，**换电脑不带走**；换机重跑一次 `apply-preset.py` 即可 |
+
+### 只有预设、不装机也行吗
+
+行。`phone_*` 工具只是**发现层**（转发到本包 `scripts/` 下的真实脚本）。如果你只想用 skill 形态：
+
+- 把整个文件夹拷到 `~/.dsh/skills/android-screen-automation/`
+- 直接用 `bash scripts/start.sh` 等脚本，不装插件
+- 需要"工具表里一定在"时再装插件或预设
+
+### ⚠ 实机验证结果（2026-10-17，本机 DSH 桌面版）
+
+`apply-preset.py` 在**本机构建上未能生效**，原因是：
+
+1. `cordis.yml` 是**应用启动时自动生成**的（手改会被覆盖）
+2. `cordis.patch.yml` 的定位是"按 id 覆盖已有条目"，**追加一个全新预设会被忽略**
+
+也就是说：**这个构建可能不支持用文件方式新增 agent 预设**。脚本保留备用（若日后 DSH 开放该能力可直接用），
+但**不要指望它现在就生效**。已验证可用的替代做法见下面「不依赖预设的做法」。
+
+===============================================================
+附：DSH 安装提示词（傻瓜式）
+===============================================================
+
+把下面整段**原样复制**，作为你在一个新的 DSH 会话里的第一条消息发出去。
+（只需把第一行的路径改成你解压后的实际位置。）
+
+---- 复制开始 ----
+
+请帮我把「android-screen-automation」手机自动化技能装到这台机器上。
+安装包在：C:\Users\你的用户名\Desktop\android-screen-automation
+
+请按顺序做完，每步都要**实测验证**，不要只说"应该可以"：
+
+1) 通读包里的 SKILL.md 和 references/pitfalls.md，然后在回答里用三句话复述
+   六条铁律里最关键的三条（绝不盲点 / 翻页点击必点 / 先清后设），确认你真的理解。
+
+2) 把整个文件夹拷到 %USERPROFILE%\.dsh\skills\android-screen-automation
+   （已存在就先备份成带时间戳的副本再覆盖）。
+
+3) 装机自检，任何一项失败都要当场修到通过：
+   - bash -n 逐个检查 scripts/*.sh
+   - python -m py_compile scripts/pix.py，并确认 python 能 import PIL
+   - 确认 adb 可执行（找到 adb 的真实路径，别用 PATH 里可能不存在的）
+
+4) 探明本机环境，并把结果**写回脚本默认值**（不是只打印给人看）：
+   - adb devices 拿到设备 serial（排除 offline、排除 emulator-*）
+   - 跑 scripts/env-probe.sh：分辨率、密度、唤醒状态、前台 App、
+     screencap 与 uiautomator dump 各自耗时、路线判定（A 截图 / B 可访问性树）
+   - 把 serial、adb 路径、屏幕分辨率写进 scripts/lib.sh 顶部的默认值
+
+5) 实机标定（必须做，不能跳，结果同样写回默认值）：
+   - scripts/tap-probe.sh：确认点哪一列 x 能真正选中（得到 TAPX）
+   - scripts/nav-bench.sh：测出"下一题"最快可用间隔
+   - 把这两个数也写回默认值
+
+6) 装插件，让 phone_* 进工具表（推荐但可选）：
+   - 进入包里的 dsh-phone-tools 目录
+   - dsh plugin --profile desktop add link:<该目录绝对路径>
+   - 或把 "dsh-phone-tools" 加进 profile package.json 的 dsh.profile.bundles
+   - 装完提示我重启客户端；重启后用 phone_probe 验证能调通
+   注意：工具参数必须是完整 JSON Schema（{type:"object",properties:{...}}），
+   否则上游会报 Invalid schema for function ... got 'type: null'
+
+7) 端到端小验证：用 5 道题的页面跑一遍
+   采集(collect) → 读图出答案键 → 作答(answer)，
+   把 5 题的结果和耗时贴给我。
+
+硬性要求（违反就等于白装）：
+- 绝不使用固定坐标盲点；坐标必须每题实时检测，或在采集遍逐页记录后复用
+- 翻页点击无论本题是否作答都必须点，跳过一页会让之后每一题错位一格，整卷作废
+- 单选是 radio 语义：必须先清除多余项、最后才设正确答案
+- 多选题重复点已选项会取消选中，不能无脑重放
+- 任何"我以为改好了"的结论，都要用截图回读核验，不许靠日志自证
+
+---- 复制结束 ----
+
+为什么这样写：
+
+* 每一步都要求"实测 + 写回默认值"，而不是让模型背一遍流程了事
+* 第 4、5 步（环境探明、点击列与翻页间隔标定）是最容易被跳过、也是实际最容易翻车的两处
+* 第 6 步顺带写进了那个真实踩过的 schema 坑，避免装完一用就整轮失败
+* 最后一段硬性要求，是把六条铁律压成"可检查的断言"，防止模型把它当形容词读过去
+
+
+================================================================
+  第 1.1 版更新：做成「agent 预设」，只在手机模式下加载工具
+================================================================
+
+【这一节覆盖上文中"预设方式未生效"的说法】
+
+1.1 之前的问题：phone_* 工具装完就是**全局**的，任何模式（标准 / Cordis /
+Computer Use …）都能看到并调用。想要的是：**只有手机模式才加载它**。
+
+★ 为什么 1.1 之前失败过
+  我一开始把预设条目直接写进 profiles/desktop/cordis.yml —— 无效。
+  那个文件是**应用启动时重新生成的**（每次启动行数、内容都变），手写的内容
+  会被覆盖掉。改 cordis.patch.yml 加裸条目 `- id: preset-phone` 也无效，
+  因为那个文件只支持"按已有 id 覆盖属性"，不支持新增。
+
+★ 正确做法（从 dsh-orb 的 patch 里看出来的）
+  新增顶层条目必须用 insert：
+
+      - insert:
+          - id: preset-phone
+            name: '@deepseek-ai/dsh-agent-preset'
+            config: {...}
+
+★ 为什么要拆成两个包
+  一个包只要进了 dsh.profile.bundles，它的**主模块就会被全局加载**。
+  所以不能让 dsh-phone-tools 自己当 bundle（那样工具又变全局）。
+  拆法：
+    dsh-phone-tools   → 普通依赖，只被预设引用（不写进 bundles）
+    dsh-phone-preset  → 空模块，唯一职责就是用 insert 把预设插进去（写进 bundles）
+
+★ 安装（三步）
+  1) 两个包放进 node_modules（Windows 用 junction，免管理员）：
+         mklink /J "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-phone-tools"  <本目录>\plugin\dsh-phone-tools
+         mklink /J "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-phone-preset" <本目录>\plugin\dsh-phone-preset
+
+  2) profiles/desktop/package.json 里两个都进 dependencies：
+         "dsh-phone-tools":  "link:<本目录>/plugin/dsh-phone-tools"
+         "dsh-phone-preset": "link:<本目录>/plugin/dsh-phone-preset"
+     但 **只有 dsh-phone-preset 进 bundles**：
+         "dsh": { "profile": { "bundles": [ ..., "dsh-phone-preset" ] } }
+
+  3) 重启 DSH。
+
+★ 验证（实测通过）
+  重启后 profiles/desktop/cordis.yml 里应满足：
+      - id: preset-phone              ← 出现，且是第 6 个预设
+      全文 dsh-phone-tools 只出现 1 次  ← 说明没有全局暴露
+  实测结果：
+      1421:- id: preset-phone
+      1593:        name: dsh-phone-tools     ← 全文唯一一处，在预设内部
+      该预设内插件 33 个，含 tool-fs（读图必需）和 tool-phone
+
+★ 使用
+  在 DSH 的模式选择里选「手机自动化模式」，此时才有 phone_* 工具；
+  切回其它模式，phone_* 消失。这正是当初想要的作用域隔离。
+
+★ 注意
+  - 预设是本机 profile 级配置，**不可携带**到别的电脑；
+    换机器要重做上面三步（但 key.txt 和技能脚本可以照旧带走）。
+  - 预设的插件清单是从"standard"预设**复制**出来的，不是继承。
+    以后 DSH 升级改了 standard 的工具集，这个副本不会自动跟进，
+    需要重新生成一次 cordis.patch.yml。
+
+----------------------------------------------------------------
+  1.1.2 补充：工具包【绝对不能】自己带 cordis.patch.yml
+----------------------------------------------------------------
+
+我最初给 dsh-phone-tools 写了个 cordis.patch.yml，里面是：
+
+    - insert:
+        - id: dsh-phone-tools
+          name: 'dsh-phone-tools'
+
+它把插件自己插成了 profile 的**全局条目** —— 于是无论选哪个预设
+（标准 / Cordis / Computer Use），phone_* 工具全都在。作用域隔离
+白做了。
+
+实测症状：标准模式会话里能直接调 phone_probe 并真的操作到手机。
+
+正确分工（这就是为什么必须两个包）：
+  dsh-phone-tools   = 普通依赖，**没有** dsh.bundle、**没有** patch 文件
+                      只在被预设引用时才加载
+  dsh-phone-preset  = 唯一的 bundle，patch 只做一件事：insert 一个预设
+
+自查命令（重启后跑，应满足两条）：
+    grep -c 'dsh-phone-tools' profiles/desktop/cordis.yml     # 期望 1
+    grep    'id: dsh-phone-tools' profiles/desktop/cordis.yml  # 期望无输出
+
+只要第二条有输出，就说明工具又被插成全局条目了。
+
+
+================================================================
+  最终安装位置与文件形态（1.1.2 定稿）
+================================================================
+
+★ 装在哪
+本机装法与其它插件保持一致：**真目录**放在 profile 的 node_modules 下
+
+  C:\Users\<你>\.dsh\profiles\desktop\node_modules\
+      dsh-phone-tools\        <- 真目录（不是 junction）
+      dsh-phone-preset\       <- 真目录
+
+（早期我用 junction 指向工作目录，能跑但不规范，也让"包到底在哪"变得含糊。
+ 现在两个都是真目录，与 dsh-ops / dsh-orb / dsh-blender 等形式一致。）
+
+★ package.json 怎么写
+  dependencies:
+      "dsh-phone-tools":  "1.1.2"
+      "dsh-phone-preset": "1.1.2"
+  dsh.profile.bundles:   只加 "dsh-phone-preset"
+
+★ 桌面留副本
+  C:\Users\<你>\Desktop\android-screen-automation\        <- 文件夹
+  C:\Users\<你>\Desktop\android-screen-automation.zip     <- 用于上传/发送
+
+  这份是**可分发包**：技能 + 答案键 + 两个插件包 + 教程与提示词。
+  本机安装可以完全只用桌面这份（拷到 node_modules + 拷技能目录），
+  不依赖任何工作目录。
+
+★ 三份东西的关系
+  安装包（桌面）   = 可分发、可上传，是唯一的"源"
+  本机 profile     = 实际生效（node_modules 真目录 + package.json 两条声明）
+  技能目录         = 脚本与方法的唯一副本；插件只是"发现层"，不复制逻辑
+
+★ 换机器流程
+  1) 解压安装包
+  2) 技能拷到 .dsh\skills\android-screen-automation\
+  3) 两个插件包拷到 <profile>\node_modules\
+  4) package.json 加两条 dependencies + bundles 里加 dsh-phone-preset
+  5) 重启 DSH
+  6) 跑验收三连：
+       grep -c 'dsh-phone-tools' <profile>/cordis.yml      # = 1
+       grep    'id: dsh-phone-tools' <profile>/cordis.yml  # 无输出
+       标准模式无 phone_probe / 手机模式有 6 个 / probe 回执是 v1.1.2
